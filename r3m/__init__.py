@@ -2,6 +2,7 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
+from r3m.models.fusion import DINO_CLIP_Fusion
 from r3m.models.models_r3m import R3M
 
 import os 
@@ -42,6 +43,11 @@ def remove_language_head(state_dict):
     return state_dict
 
 def load_r3m(modelid):
+    if modelid == "dino_clip_fusion":
+        model = DINO_CLIP_Fusion(output_dim=512)
+        model.eval() 
+        return model
+    
     home = os.path.join(expanduser("~"), ".r3m")
     if modelid == "resnet50":
         foldername = "r3m_50"
