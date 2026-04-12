@@ -1,3 +1,13 @@
 outputs/
 __pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
 .nfs*
+.context/
+checkpoints/
+data/
+wandb/
+*.pt
+*.pth
