@@ -1,0 +1,45 @@
+encoder:
+  backbone: "dinov2_vitl14"  # dinov2_vitb14, dinov2_vitl14
+  freeze: true
+  input_size: 518  # DINOv2 native resolution (multiple of 14)
+
+masking:
+  enabled: true
+  model: "facebook/sam2-hiera-large"
+  threshold: 0.5
+
+policy:
+  hidden_dim: 256
+  num_layers: 3
+  action_dim: 6  # delta (x, y, z, roll, pitch, yaw)
+  proprio_dim: 14  # 7 joint angles + 7 (pos3 + quat4)
+  dropout: 0.0
+
+training:
+  lr: 1e-4
+  weight_decay: 1e-5
+  batch_size: 64
+  num_epochs: 200
+  seed: 42
+  eval_freq: 10
+  checkpoint_dir: "checkpoints"
+  log_wandb: false
+  wandb_project: "cavr"
+
+data:
+  num_demos: 50
+  save_dir: "data/demos"
+
+env:
+  name: "PickPlace"  # PickPlace, Door
+  robots: "Panda"
+  horizon: 400
+  camera_name: "agentview"
+  camera_height: 518
+  camera_width: 518
+  reward_shaping: true
+
+evaluation:
+  num_episodes: 50
+  save_videos: false
+  video_dir: "outputs/videos"

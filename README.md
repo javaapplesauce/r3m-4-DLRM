@@ -1,46 +1,123 @@
-# R3M: A Universal Visual Representation for Robot Manipulation
+# Concept-Aware Visual Representations for Robotic Manipulation
 
-This project studies how to learn generalizable visual representation for robotics from videos of humans and natural language. It contains pre-trained representation on the Ego4D dataset trained in the [R3M paper](https://arxiv.org/abs/2203.12601)
+This project implements a hybrid vision-action stack that integrates DINOv2 dense geometric features with SAM's promptable concept segmentation for robotic manipulation policy learning via behavioral cloning.
 
-![](https://cs.stanford.edu/~surajn/images/r3m_robot_teaser_2.gif)
+## Architecture
+
+```
+RGB Image (518x518)
+    |
+    v
+DINOv2 ViT-L/14 (frozen) --> Dense Feature Map F_d (37x37x1024)
+    |
+    v
+SAM Concept Mask (frozen) --> Binary Mask M (37x37x1)
+    |                          (from task description, e.g. "the red mug")
+    v
+Element-wise Filter: F_f = F_d * M
+    |
+    v
+Spatial Average Pool --> Visual Embedding z_vis (1024,)
+    |
+    v
+Concat [z_vis, z_proprio] --> (1038,)
+    |
+    v
+3-Layer MLP (LayerNorm + ReLU) --> 6-DOF Action (dx, dy, dz, droll, dpitch, dyaw)
+```
+
+The foundation models (DINOv2, SAM) remain frozen. Only the MLP policy head is trained via behavioral cloning (MSE loss on expert demonstrations).
 
 ## Installation
 
-To install R3M from an existing conda environment, simply run `pip install -e .` from this directory. 
-
-You can alternatively build a fresh conda env from the r3m_base.yaml file [here](https://github.com/facebookresearch/r3m/blob/main/r3m/r3m_base.yaml) and then install from this directory with `pip install -e .`
-
-You can test if it has installed correctly by running `import r3m` from a python shell.
-
-## Using the representation
-
-To use the model in your code simply run:
-```
-from r3m import load_r3m
-r3m = load_r3m("resnet50") # resnet18, resnet34
-r3m.eval()
+```bash
+pip install -e .
 ```
 
-Further example code to use a pre-trained representation is located in the example [here](https://github.com/facebookresearch/r3m/blob/main/r3m/example.py).
+For simulation environments:
+```bash
+pip install robosuite
+```
 
-If you have any issue accessing or downloading R3M please contact Suraj Nair: surajn (at) stanford (dot) edu
+For concept masking (optional, requires GPU):
+```bash
+pip install segment-anything-2 transformers
+```
 
-## Training the representation
+## Usage
 
-To train the representation run:
+### 1. Collect Demonstrations
 
-`python train_representation.py hydra/launcher=local hydra/output=local agent.langweight=1.0 agent.size=50 experiment=r3m_test dataset=ego4d doaug=rctraj agent.l1weight=0.00001 batch_size=16 datapath=<PATH TO PARSED Ego4D DATA> wandbuser=<WEIGHTS AND BIASES USER> wandbproject=<WEIGHTS AND BIASES PROJECT>`
- 
-Note: For fast training, the Ego4D data loading code assumes that the dataset has been parsed into frames, with a folder for each video clip and frames of the videoclip (resized to [224 x 224]) numbered within the directory (for example `000123.jpg`). It also assumes a file called `manifest.csv` which has a row for each clip, with the path to the clip folder, the clip length, and the natural language pairing for the clip. 
- 
-## Evaluating the representation with behavior cloning
+```bash
+python scripts/collect_demos.py --env PickPlace --num-demos 50
+python scripts/collect_demos.py --env Door --num-demos 50
+```
 
-See the `eval` branch [here](https://github.com/facebookresearch/r3m/tree/eval/evaluation).
+### 2. Train Policy
+
+```bash
+# Train CAVR (proposed method)
+python scripts/train.py --model cavr --env PickPlace --data-dir data/demos
+
+# Train baselines
+python scripts/train.py --model r3m --env PickPlace --data-dir data/demos
+python scripts/train.py --model vc1 --env PickPlace --data-dir data/demos
+```
+
+### 3. Evaluate
+
+```bash
+python scripts/evaluate.py --model cavr --checkpoint checkpoints/cavr_PickPlace/best.pt --num-episodes 50
+```
+
+### 4. Run Full Baseline Comparison
+
+```bash
+python scripts/run_baselines.py --env PickPlace --data-dir data/demos
+```
+
+### 5. Run Ablation Studies
+
+```bash
+python scripts/run_ablation.py --env PickPlace --data-dir data/demos
+```
+
+Ablation variants:
+- `cavr_vitl_masked` — Full CAVR (DINOv2 ViT-L/14 + SAM masking)
+- `cavr_vitl_no_mask` — DINOv2 ViT-L/14 without masking
+- `cavr_vitb_masked` — DINOv2 ViT-B/14 + SAM masking
+- `cavr_vitb_no_mask` — DINOv2 ViT-B/14 without masking
+
+## Project Structure
+
+```
+cavr/
+    models/
+        encoder.py        # DINOv2 dense feature extractor
+        concept_mask.py   # SAM-based concept masking
+        policy.py         # MLP policy head
+        pipeline.py       # Full CAVR pipeline
+        baselines.py      # R3M and VC-1 baseline wrappers
+    data/
+        dataset.py        # HDF5/NPZ demonstration dataset
+        collector.py      # Scripted demo collection
+    envs/
+        robosuite_envs.py # Robosuite environment wrappers
+    training/
+        bc_trainer.py     # Behavioral cloning trainer
+    evaluation/
+        evaluator.py      # Policy evaluation (success rate)
+        ablation.py       # Ablation study runner
+    configs/
+        default.yaml      # Default configuration
+scripts/
+    collect_demos.py      # Collect demonstrations
+    train.py              # Train policy
+    evaluate.py           # Evaluate checkpoints
+    run_baselines.py      # Train + evaluate all models
+    run_ablation.py       # Run ablation studies
+```
 
 ## License
 
-R3M is licensed under the MIT license.
-
-## Ackowledgements
-
-Parts of this code are adapted from the DrQV2 [codebase](https://github.com/facebookresearch/drqv2)
+MIT
