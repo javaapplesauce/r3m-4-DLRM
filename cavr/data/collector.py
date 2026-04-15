@@ -1,16 +1,21 @@
 """Scripted expert demonstration collection for robosuite tasks.
 
-The scripted policy is a simple heuristic operating in the robot end-effector
-frame. It is *not* a high-quality expert — it exists to produce enough
-successful episodes to unblock training and evaluation of CAVR. Episodes that
-do not reach task success (by robosuite's own success criterion) are discarded.
+The scripted policy is a simple heuristic operating in the end-effector frame.
+It is *not* a high-quality expert — it exists to produce enough successful
+episodes to unblock training and evaluation of CAVR. Episodes that do not
+reach task success (by robosuite's own success criterion) are discarded.
 
 Action convention written to disk (cfg["policy"]["action_dim"] = 6):
     [dx, dy, dz, droll, dpitch, dyaw]
-Gripper is commanded by the collector via a phase-based heuristic but NOT stored.
-At evaluation time, gripper control must be supplied by a similar heuristic.
+Gripper is commanded by the collector via a phase-based heuristic but NOT
+stored. At evaluation time, gripper control must be supplied by a similar
+heuristic (or raise action_dim to 7 to store the gripper channel).
 """
 import os
+# Silence robosuite's per-reset controller-config logging before any
+# robosuite import happens.
+os.environ.setdefault("ROBOSUITE_LOG_LEVEL", "WARN")
+
 from pathlib import Path
 
 import h5py
@@ -20,75 +25,112 @@ from tqdm import tqdm
 from cavr.envs.robosuite_envs import make_env, extract_obs
 
 
-def _target_position(env, env_name):
-    """Return a 3-vec world-frame target to reach for the current env state."""
-    try:
-        if env_name.startswith("PickPlace"):
-            obj = env.objects[0] if hasattr(env, "objects") and env.objects else None
-            if obj is not None and hasattr(env, "sim"):
-                return np.array(env.sim.data.body_xpos[env.sim.model.body_name2id(obj.root_body)])
-        if env_name == "Door":
-            handle_id = env.sim.model.site_name2id("door_handle")
-            return np.array(env.sim.data.site_xpos[handle_id])
-    except Exception:
-        pass
-    # Fallback: cube-like object at robosuite default
-    return np.array([0.0, 0.0, 0.9])
+OBJECT_POS_KEYS = (
+    "cube_pos",
+    "Can_pos", "Milk_pos", "Bread_pos", "Cereal_pos",
+    "handle_pos", "door_pos",
+)
 
 
-def _scripted_step(env, env_name, phase):
-    """Return (action_6d, gripper_cmd, next_phase) for a heuristic expert."""
-    eef_pos = env.sim.data.site_xpos[env.sim.model.site_name2id("gripper0_grip_site")] \
-        if "gripper0_grip_site" in env.sim.model.site_names \
-        else np.array(env._eef_xpos) if hasattr(env, "_eef_xpos") else np.zeros(3)
+def _eef_pos_from_obs(obs):
+    eef = obs.get("robot0_eef_pos")
+    if eef is None:
+        return np.zeros(3, dtype=np.float32)
+    return np.asarray(eef, dtype=np.float32)
 
-    target = _target_position(env, env_name)
-    delta = target - eef_pos
-    dist = np.linalg.norm(delta[:2])
 
-    gripper_cmd = -1.0  # open
+def _target_pos_from_obs(obs):
+    for key in OBJECT_POS_KEYS:
+        if key in obs:
+            return np.asarray(obs[key], dtype=np.float32)
+    # Last resort: scan for any *_pos not belonging to the robot.
+    for k, v in obs.items():
+        if k.endswith("_pos") and not k.startswith("robot"):
+            arr = np.asarray(v, dtype=np.float32)
+            if arr.shape == (3,):
+                return arr
+    return None
+
+
+def _scripted_step(obs, phase_state):
+    """Advance the scripted policy by one step.
+
+    phase_state is mutated: {"phase": str, "ticks": int}.
+    Returns (action6, gripper_cmd).
+    """
+    eef = _eef_pos_from_obs(obs)
+    target = _target_pos_from_obs(obs)
+    phase = phase_state["phase"]
+    ticks = phase_state["ticks"]
+
+    gripper = -1.0
+    direction = np.zeros(3, dtype=np.float32)
+
+    if target is None:
+        # No target found — random exploration (unlikely to succeed, but
+        # at least won't loop forever).
+        direction = 0.05 * np.random.randn(3).astype(np.float32)
+        phase_state["ticks"] = ticks + 1
+        return np.concatenate([direction, np.zeros(3)]).astype(np.float32), gripper
+
     if phase == "approach":
-        direction = np.concatenate([delta[:2], [0.05]])
-        if dist < 0.02:
+        # Hover 6 cm above the target, aligned in xy.
+        hover = np.array([target[0], target[1], target[2] + 0.06], dtype=np.float32)
+        delta = hover - eef
+        direction = np.clip(5.0 * delta, -1.0, 1.0)
+        if np.linalg.norm(delta) < 0.012:
             phase = "descend"
+            ticks = 0
     elif phase == "descend":
-        direction = np.array([0.0, 0.0, -0.05])
-        if delta[2] > -0.005:
+        # Descend until the eef z is just above the object center.
+        grasp_z = target[2] + 0.005
+        dxy = target[:2] - eef[:2]
+        dz = grasp_z - eef[2]
+        direction = np.array([
+            np.clip(5.0 * dxy[0], -0.25, 0.25),
+            np.clip(5.0 * dxy[1], -0.25, 0.25),
+            np.clip(5.0 * dz, -1.0, 0.25),
+        ], dtype=np.float32)
+        if abs(dz) < 0.008 and np.linalg.norm(dxy) < 0.015:
             phase = "grasp"
+            ticks = 0
     elif phase == "grasp":
-        direction = np.zeros(3)
-        gripper_cmd = 1.0
-        phase = "lift"
+        # Hold still and close the gripper for a handful of steps so the
+        # fingers physically clamp before we try to lift.
+        gripper = 1.0
+        if ticks > 8:
+            phase = "lift"
+            ticks = 0
     elif phase == "lift":
-        direction = np.array([0.0, 0.0, 0.08])
-        gripper_cmd = 1.0
-        if eef_pos[2] > 1.05:
-            phase = "carry"
-    else:  # carry/hold
-        direction = np.zeros(3)
-        gripper_cmd = 1.0
+        gripper = 1.0
+        direction = np.array([0.0, 0.0, 0.8], dtype=np.float32)
+        if eef[2] > 1.10:
+            phase = "hold"
+            ticks = 0
+    else:  # hold
+        gripper = 1.0
 
-    direction = np.clip(direction, -0.1, 0.1)
+    phase_state["phase"] = phase
+    phase_state["ticks"] = ticks + 1
+
     action6 = np.concatenate([direction, np.zeros(3)]).astype(np.float32)
-    return action6, gripper_cmd, phase
+    return action6, gripper
 
 
-def _rollout_one(env, cfg, max_retries=5):
+def _rollout_one(env, cfg):
     """Run the scripted policy until success or horizon. Returns None on failure."""
-    env_name = cfg["env"]["name"]
     cam = cfg["env"]["camera_name"]
     horizon = cfg["env"]["horizon"]
 
     obs = env.reset()
-    phase = "approach"
+    phase_state = {"phase": "approach", "ticks": 0}
     images, proprios, actions = [], [], []
 
     for _ in range(horizon):
         img, proprio = extract_obs(obs, camera_name=cam)
-        action6, gripper, phase = _scripted_step(env, env_name, phase)
+        action6, gripper = _scripted_step(obs, phase_state)
+
         full_action = np.concatenate([action6, [gripper]]).astype(np.float32)
-        # robosuite default OSC_POSE controller expects 7-dim [pose6, gripper].
-        # If the controller action dim differs, pad/truncate.
         ctrl_dim = env.action_dim
         if full_action.shape[0] < ctrl_dim:
             full_action = np.pad(full_action, (0, ctrl_dim - full_action.shape[0]))
@@ -100,8 +142,11 @@ def _rollout_one(env, cfg, max_retries=5):
         actions.append(action6)
 
         obs, _reward, done, _info = env.step(full_action)
-        if env._check_success():
-            return np.stack(images), np.stack(proprios), np.stack(actions)
+        try:
+            if env._check_success():
+                return np.stack(images), np.stack(proprios), np.stack(actions)
+        except Exception:
+            pass
         if done:
             return None
     return None
@@ -124,11 +169,12 @@ def collect_scripted_demos(cfg):
 
         saved = 0
         attempts = 0
-        max_attempts = num_demos * 10
+        max_attempts = num_demos * 20
         pbar = tqdm(total=num_demos, desc=f"collecting {cfg['env']['name']}")
         while saved < num_demos and attempts < max_attempts:
             attempts += 1
             result = _rollout_one(env, cfg)
+            pbar.set_postfix(attempts=attempts, succ=saved)
             if result is None:
                 continue
             imgs, props, acts = result
