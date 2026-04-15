@@ -79,13 +79,23 @@ class ConceptMasker(nn.Module):
             images=image_pil, text=text, return_tensors="pt"
         ).to(self._device)
         outputs = self._grounding_model(**inputs)
-        results = self._grounding_processor.post_process_grounded_object_detection(
-            outputs,
-            inputs["input_ids"],
-            box_threshold=0.25,
-            text_threshold=0.25,
-            target_sizes=[image_pil.size[::-1]],
-        )[0]
+        try:
+            # transformers >= 4.45 renamed box_threshold -> threshold
+            results = self._grounding_processor.post_process_grounded_object_detection(
+                outputs,
+                inputs["input_ids"],
+                threshold=0.25,
+                text_threshold=0.25,
+                target_sizes=[image_pil.size[::-1]],
+            )[0]
+        except TypeError:
+            results = self._grounding_processor.post_process_grounded_object_detection(
+                outputs,
+                inputs["input_ids"],
+                box_threshold=0.25,
+                text_threshold=0.25,
+                target_sizes=[image_pil.size[::-1]],
+            )[0]
         if len(results["boxes"]) == 0:
             return None
         best = results["scores"].argmax()
