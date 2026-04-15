@@ -41,8 +41,8 @@ def warn(name, msg):
 
 def check_python():
     v = sys.version_info
-    assert v.major == 3 and v.minor in (10, 11), \
-        f"Python 3.10 or 3.11 required, got {v.major}.{v.minor}"
+    assert v.major == 3 and v.minor in (10, 11, 12), \
+        f"Python 3.10, 3.11, or 3.12 required, got {v.major}.{v.minor}"
     return f"{v.major}.{v.minor}.{v.micro}"
 
 
