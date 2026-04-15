@@ -51,6 +51,12 @@ def main():
 
     model = MODEL_BUILDERS[args.model](cfg, device)
     dataset = DemoDataset(cfg["data"]["save_dir"])
+    if len(dataset) == 0:
+        raise RuntimeError(
+            f"Dataset at {cfg['data']['save_dir']} has 0 timesteps. "
+            f"Did demo collection succeed, and does --data-dir match the "
+            f"directory you wrote to in scripts/collect_demos.py?"
+        )
     task_desc = get_task_description(cfg["env"]["name"])
 
     cfg["training"]["checkpoint_dir"] = f"checkpoints/{args.model}_{cfg['env']['name']}"
