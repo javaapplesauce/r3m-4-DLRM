@@ -6,8 +6,8 @@ dist/
 build/
 .nfs*
 .context/
-checkpoints/
-data/
-wandb/
+/checkpoints/
+/data/
+/wandb/
 *.pt
 *.pth
