@@ -34,15 +34,24 @@ The foundation models (DINOv2, SAM) remain frozen. Only the MLP policy head is t
 pip install -e .
 ```
 
+### Running on Google Colab (A100)
+
+See [`colab/cavr_colab.ipynb`](colab/cavr_colab.ipynb). Open it in Colab, set the runtime to A100 GPU, edit the `REPO_URL` in the clone cell, and run top to bottom. The notebook handles apt deps, EGL rendering backend, Drive persistence, and the full train/evaluate/baseline/ablation pipeline.
+
 For simulation environments:
 ```bash
 pip install robosuite
 ```
 
-For concept masking (optional, requires GPU):
+For concept masking (optional, requires GPU). The `sam2` package is not on
+PyPI under that name — install from GitHub and download the checkpoint:
 ```bash
-pip install segment-anything-2 transformers
+pip install transformers
+pip install "sam2 @ git+https://github.com/facebookresearch/sam2.git"
+wget https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt
 ```
+If either install fails, `ConceptMasker` falls back to an all-ones mask and
+emits a `RuntimeWarning` — training still runs but masking is a no-op.
 
 ## Usage
 

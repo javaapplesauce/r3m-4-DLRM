@@ -16,8 +16,8 @@ policy:
   dropout: 0.0
 
 training:
-  lr: 1e-4
-  weight_decay: 1e-5
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
   batch_size: 64
   num_epochs: 200
   seed: 42

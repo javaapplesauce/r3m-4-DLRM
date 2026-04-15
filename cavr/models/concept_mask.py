@@ -19,15 +19,31 @@ class ConceptMasker(nn.Module):
     def __init__(self, threshold=0.5, device="cpu"):
         super().__init__()
         self.threshold = threshold
-        self._device = device
+        self._device = torch.device(device) if not isinstance(device, torch.device) else device
         self._grounding_model = None
         self._sam_predictor = None
         self._initialized = False
+        self._warned_fallback = False
 
-    def _lazy_init(self):
+    def _lazy_init(self, device=None):
+        target = torch.device(device) if device is not None else self._device
+
         if self._initialized:
+            if target == self._device:
+                return
+            if self._grounding_model is not None:
+                self._grounding_model = self._grounding_model.to(target)
+            if self._sam_predictor is not None:
+                try:
+                    self._sam_predictor.model.to(target)
+                except Exception:
+                    pass
+            self._device = target
             return
+
         self._initialized = True
+        self._device = target
+
         try:
             from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 
@@ -40,19 +56,21 @@ class ConceptMasker(nn.Module):
             self._grounding_model.eval()
             for p in self._grounding_model.parameters():
                 p.requires_grad = False
-        except Exception:
+        except Exception as e:
             self._grounding_model = None
+            self._gdino_err = repr(e)
 
         try:
             from sam2.build_sam import build_sam2
             from sam2.sam2_image_predictor import SAM2ImagePredictor
 
             sam = build_sam2(
-                "sam2_hiera_l.yaml", "sam2_hiera_large.pt", device=self._device
+                "sam2_hiera_l.yaml", "sam2_hiera_large.pt", device=str(self._device)
             )
             self._sam_predictor = SAM2ImagePredictor(sam)
-        except Exception:
+        except Exception as e:
             self._sam_predictor = None
+            self._sam_err = repr(e)
 
     @torch.no_grad()
     def _get_bounding_box(self, image_pil, text):
@@ -84,11 +102,22 @@ class ConceptMasker(nn.Module):
         Returns:
             masks: (B, feature_h, feature_w, 1) binary mask tensor.
         """
-        self._lazy_init()
+        self._lazy_init(device=images.device)
         B = images.shape[0]
         device = images.device
 
         if self._grounding_model is None or self._sam_predictor is None:
+            if not self._warned_fallback:
+                import warnings
+                warnings.warn(
+                    "ConceptMasker: Grounding DINO or SAM2 not available; "
+                    "returning all-ones mask (masking is a no-op). Install "
+                    "transformers and sam2, and ensure sam2_hiera_large.pt is "
+                    "on disk, to enable concept masking.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                self._warned_fallback = True
             return torch.ones(B, feature_h, feature_w, 1, device=device)
 
         from PIL import Image as PILImage

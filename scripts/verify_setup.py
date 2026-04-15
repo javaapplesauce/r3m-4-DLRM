@@ -181,18 +181,16 @@ def check_training_smoke():
         demo_path = os.path.join(tmpdir, "demos.hdf5")
         N = 20
         with h5py.File(demo_path, "w") as f:
-            data_grp = f.create_group("data")
-            demo_grp = data_grp.create_group("demo_0")
-            obs_grp = demo_grp.create_group("obs")
-            obs_grp.create_dataset(
-                "agentview_image",
+            g = f.create_group("demo_0")
+            g.create_dataset(
+                "images",
                 data=np.random.randint(0, 255, (N, 3, 518, 518), dtype=np.uint8),
             )
-            obs_grp.create_dataset("proprio", data=np.random.randn(N, 14).astype(np.float32))
-            demo_grp.create_dataset("actions", data=np.random.randn(N, 6).astype(np.float32))
+            g.create_dataset("proprio", data=np.random.randn(N, 14).astype(np.float32))
+            g.create_dataset("actions", data=np.random.randn(N, 6).astype(np.float32))
 
         cfg["training"]["checkpoint_dir"] = os.path.join(tmpdir, "ckpts")
-        dataset = DemoDataset(tmpdir, camera_name="agentview")
+        dataset = DemoDataset(tmpdir)
         assert len(dataset) == N, f"Dataset has {len(dataset)} items, expected {N}"
 
         model = CAVR(cfg)

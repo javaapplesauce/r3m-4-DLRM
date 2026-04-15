@@ -1,8 +1,19 @@
 import os
+import sys
 import time
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
+
+
+def _freeze_encoder_bn(model):
+    """Force any frozen visual encoder into eval() so BatchNorm running stats
+    do not drift during training. Handles both the CAVR pipeline (`.encoder`)
+    and the baseline wrappers (`._encoder`, loaded lazily — may be None)."""
+    for attr in ("encoder", "_encoder"):
+        enc = getattr(model, attr, None)
+        if isinstance(enc, nn.Module):
+            enc.eval()
 
 
 class BCTrainer:
@@ -20,8 +31,8 @@ class BCTrainer:
         trainable = [p for p in model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.Adam(
             trainable,
-            lr=self.cfg["lr"],
-            weight_decay=self.cfg["weight_decay"],
+            lr=float(self.cfg["lr"]),
+            weight_decay=float(self.cfg["weight_decay"]),
         )
         self.loss_fn = nn.MSELoss()
         self.logger = None
@@ -42,20 +53,23 @@ class BCTrainer:
             generator=torch.Generator().manual_seed(self.cfg["seed"]),
         )
 
+        default_workers = 0 if sys.platform == "darwin" else 4
+        num_workers = int(self.cfg.get("num_workers", default_workers))
+        pin_memory = self.device != "cpu"
         train_loader = DataLoader(
             train_set,
             batch_size=self.cfg["batch_size"],
             shuffle=True,
-            num_workers=4,
-            pin_memory=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
             drop_last=True,
         )
         val_loader = DataLoader(
             val_set,
             batch_size=self.cfg["batch_size"],
             shuffle=False,
-            num_workers=2,
-            pin_memory=True,
+            num_workers=max(0, num_workers // 2),
+            pin_memory=pin_memory,
         )
 
         ckpt_dir = self.cfg["checkpoint_dir"]
@@ -95,7 +109,7 @@ class BCTrainer:
 
     def _train_epoch(self, loader, task_description):
         self.model.train()
-        self.model.encoder.eval()
+        _freeze_encoder_bn(self.model)
         total_loss = 0.0
         n = 0
 
@@ -137,9 +151,16 @@ class BCTrainer:
         return total_loss / n
 
     def _save_checkpoint(self, path, epoch):
+        frozen_prefixes = (
+            "encoder.model",
+            "_encoder",
+            "masker",
+            "_grounding_model",
+            "_sam_predictor",
+        )
         trainable_state = {
             k: v for k, v in self.model.state_dict().items()
-            if "encoder.model" not in k and "masker" not in k
+            if not any(p in k for p in frozen_prefixes)
         }
         torch.save({
             "epoch": epoch,
