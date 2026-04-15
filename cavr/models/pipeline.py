@@ -37,13 +37,17 @@ class CAVR(nn.Module):
             dropout=pol_cfg.get("dropout", 0.0),
         )
 
-    def encode(self, images, task_description=None):
+    def encode(self, images, task_description=None, mask=None):
         """Extract pooled visual embedding from images.
 
         Args:
             images: (B, 3, H, W) in [0, 255].
             task_description: str or None. If provided and masking is enabled,
                 concept-aware filtering is applied.
+            mask: optional precomputed mask tensor of shape (B, h, w) or
+                (B, h, w, 1). When provided, bypasses the live Grounding DINO
+                + SAM2 call — use this with masks produced by
+                scripts/precompute_masks.py to avoid per-step recomputation.
         Returns:
             visual_emb: (B, feat_dim)
         """
@@ -51,19 +55,31 @@ class CAVR(nn.Module):
         B, h, w, D = features.shape
 
         if self.masking_enabled and task_description is not None:
-            mask = self.masker(images, task_description, h, w)
+            if mask is None:
+                mask = self.masker(images, task_description, h, w)
+            else:
+                if mask.dim() == 3:
+                    mask = mask.unsqueeze(-1)
+                if mask.shape[1] != h or mask.shape[2] != w:
+                    m = mask.permute(0, 3, 1, 2).float()
+                    m = torch.nn.functional.interpolate(
+                        m, size=(h, w), mode="nearest"
+                    )
+                    mask = m.permute(0, 2, 3, 1)
+                mask = mask.to(device=features.device, dtype=features.dtype)
             features = features * mask
 
         return features.mean(dim=(1, 2))
 
-    def forward(self, images, proprio, task_description=None):
+    def forward(self, images, proprio, task_description=None, mask=None):
         """
         Args:
             images: (B, 3, H, W) in [0, 255].
             proprio: (B, proprio_dim).
             task_description: str, e.g. "the red cube".
+            mask: optional precomputed mask (see `encode`).
         Returns:
             action: (B, action_dim) predicted 6-DOF delta action.
         """
-        visual_emb = self.encode(images, task_description)
+        visual_emb = self.encode(images, task_description, mask=mask)
         return self.policy(visual_emb, proprio)

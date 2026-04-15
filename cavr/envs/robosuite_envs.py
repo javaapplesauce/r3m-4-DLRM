@@ -1,6 +1,11 @@
 import numpy as np
 
 TASK_DESCRIPTIONS = {
+    "Lift": "the red cube",
+    "Stack": "the red cube",
+    "NutAssembly": "the nut",
+    "NutAssemblySquare": "the square nut",
+    "NutAssemblyRound": "the round nut",
     "PickPlace": "the object on the table",
     "PickPlaceCan": "the can",
     "PickPlaceBread": "the bread",

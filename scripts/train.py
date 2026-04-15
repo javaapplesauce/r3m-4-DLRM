@@ -28,6 +28,19 @@ def main():
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--no-masking",
+        action="store_true",
+        help="Disable concept masking (overrides cfg.masking.enabled). "
+             "Useful for smoke tests — skips Grounding DINO + SAM2 entirely.",
+    )
+    parser.add_argument(
+        "--mask-file",
+        default=None,
+        help="Path to a precomputed masks.hdf5 file. If omitted, the dataset "
+             "auto-detects masks.hdf5 alongside demos.hdf5. Ignored when "
+             "--no-masking is set.",
+    )
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -45,12 +58,20 @@ def main():
         cfg["training"]["batch_size"] = args.batch_size
     if args.seed:
         cfg["training"]["seed"] = args.seed
+    if args.no_masking:
+        cfg["masking"]["enabled"] = False
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(cfg["training"]["seed"])
 
     model = MODEL_BUILDERS[args.model](cfg, device)
-    dataset = DemoDataset(cfg["data"]["save_dir"])
+
+    dataset_kwargs = {}
+    if args.no_masking:
+        dataset_kwargs["mask_filename"] = None
+    elif args.mask_file:
+        dataset_kwargs["mask_path"] = args.mask_file
+    dataset = DemoDataset(cfg["data"]["save_dir"], **dataset_kwargs)
     if len(dataset) == 0:
         raise RuntimeError(
             f"Dataset at {cfg['data']['save_dir']} has 0 timesteps. "
@@ -68,9 +89,16 @@ def main():
             f"{args.model}_{cfg['env']['name']}",
         )
 
+    mask_status = (
+        "disabled"
+        if not cfg.get("masking", {}).get("enabled", False)
+        else f"live (slow)" if not getattr(dataset, "has_masks", False)
+        else f"cached ({dataset.mask_path})"
+    )
     print(f"Model: {args.model}")
     print(f"Task:  {cfg['env']['name']} ({task_desc})")
     print(f"Data:  {len(dataset)} timesteps")
+    print(f"Masks: {mask_status}")
     print(f"Device: {device}")
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)

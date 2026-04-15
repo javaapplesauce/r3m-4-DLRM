@@ -107,18 +107,37 @@ class BCTrainer:
         self._save_checkpoint(os.path.join(ckpt_dir, "final.pt"), epoch)
         return best_val_loss
 
+    def _unpack(self, batch):
+        """Handle both 3-tuple (legacy) and 4-tuple (with cached masks) batches."""
+        if len(batch) == 4:
+            images, proprios, actions, masks = batch
+        else:
+            images, proprios, actions = batch
+            masks = None
+        images = images.to(self.device)
+        proprios = proprios.to(self.device)
+        actions = actions.to(self.device)
+        if masks is not None and masks.numel() > 0:
+            masks = masks.to(self.device)
+        else:
+            masks = None
+        return images, proprios, actions, masks
+
+    def _forward(self, images, proprios, task_description, masks):
+        if masks is not None:
+            return self.model(images, proprios, task_description, mask=masks)
+        return self.model(images, proprios, task_description)
+
     def _train_epoch(self, loader, task_description):
         self.model.train()
         _freeze_encoder_bn(self.model)
         total_loss = 0.0
         n = 0
 
-        for images, proprios, actions in loader:
-            images = images.to(self.device)
-            proprios = proprios.to(self.device)
-            actions = actions.to(self.device)
+        for batch in loader:
+            images, proprios, actions, masks = self._unpack(batch)
 
-            pred_actions = self.model(images, proprios, task_description)
+            pred_actions = self._forward(images, proprios, task_description, masks)
             loss = self.loss_fn(pred_actions, actions)
 
             self.optimizer.zero_grad()
@@ -137,12 +156,10 @@ class BCTrainer:
         total_loss = 0.0
         n = 0
 
-        for images, proprios, actions in loader:
-            images = images.to(self.device)
-            proprios = proprios.to(self.device)
-            actions = actions.to(self.device)
+        for batch in loader:
+            images, proprios, actions, masks = self._unpack(batch)
 
-            pred_actions = self.model(images, proprios, task_description)
+            pred_actions = self._forward(images, proprios, task_description, masks)
             loss = self.loss_fn(pred_actions, actions)
 
             total_loss += loss.item() * images.shape[0]

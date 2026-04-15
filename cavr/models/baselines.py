@@ -52,7 +52,7 @@ class R3MBaseline(nn.Module):
         x = self.preprocess(x)
         return self._encoder(x * 255.0)
 
-    def forward(self, images, proprio, task_description=None):
+    def forward(self, images, proprio, task_description=None, **_):
         visual_emb = self.encode(images, task_description)
         return self.policy(visual_emb, proprio)
 
@@ -112,6 +112,6 @@ class VC1Baseline(nn.Module):
         x = self._transform(x)
         return self._encoder(x)
 
-    def forward(self, images, proprio, task_description=None):
+    def forward(self, images, proprio, task_description=None, **_):
         visual_emb = self.encode(images, task_description)
         return self.policy(visual_emb, proprio)
