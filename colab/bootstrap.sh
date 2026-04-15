@@ -20,6 +20,10 @@ pip install -q --upgrade pip
 # Torch is preinstalled on Colab with matching CUDA — don't clobber it.
 pip install -q -e ".[all]"
 
+echo "[cavr] Optional: SAM2 for concept masking (best-effort)"
+pip install -q "sam-2 @ git+https://github.com/facebookresearch/sam2.git" \
+  || echo "WARNING: sam2 install failed; masking will fall back to all-ones (training still works)."
+
 echo "[cavr] SAM2 checkpoint (skip if already downloaded)"
 if [ ! -f sam2_hiera_large.pt ]; then
   wget -q --show-progress \

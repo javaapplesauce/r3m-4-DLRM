@@ -19,18 +19,21 @@ setup(
         "sim": ["robosuite>=1.4", "mujoco>=3.0"],
         "masking": [
             "transformers>=4.30",
-            "sam2 @ git+https://github.com/facebookresearch/sam2.git",
+            "sam-2 @ git+https://github.com/facebookresearch/sam2.git",
         ],
         "baselines": [
             "r3m @ git+https://github.com/facebookresearch/r3m.git",
             "timm>=0.9",
         ],
         "logging": ["wandb"],
+        # "all" excludes sam-2 on purpose: it's a CUDA-built extension that
+        # often fails on fresh environments. ConceptMasker falls back to an
+        # all-ones mask with a RuntimeWarning when sam2 is absent. Install
+        # the [masking] extra explicitly if you need real concept masking.
         "all": [
             "robosuite>=1.4",
             "mujoco>=3.0",
             "transformers>=4.30",
-            "sam2 @ git+https://github.com/facebookresearch/sam2.git",
             "r3m @ git+https://github.com/facebookresearch/r3m.git",
             "timm>=0.9",
             "wandb",
