@@ -292,13 +292,17 @@ for task in TASKS:
         continue
 
     print(f"[collect] {task}: target {TARGET_DEMOS} demos (have {n}) → {task_dir}")
+    # -u (unbuffered) so tqdm progress streams to Colab in real time.
+    # Without it, output blocks in 4KB chunks and you see one line for 10+ min.
     cmd = [
-        "python", "scripts/collect_demos.py",
+        "python", "-u", "scripts/collect_demos.py",
         "--env", task,
         "--num-demos", str(TARGET_DEMOS),
         "--save-dir", task_dir,
     ]
-    res = subprocess.run(cmd)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    res = subprocess.run(cmd, env=env)
     if res.returncode != 0:
         print(f"[FAIL] {task}: collector exit {res.returncode}")
         continue
@@ -329,11 +333,13 @@ for task in TASKS:
         print(f"[skip] {task}: masks cached at {mask_file}")
     else:
         print(f"[masks] {task}: precomputing → {mask_file}")
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
         res = subprocess.run([
-            "python", "scripts/precompute_masks.py",
+            "python", "-u", "scripts/precompute_masks.py",
             "--data-dir", task_dir,
             "--env", task,
-        ])
+        ], env=env)
         if res.returncode != 0:
             print(f"[FAIL] {task}: precompute exit {res.returncode}")
             continue
