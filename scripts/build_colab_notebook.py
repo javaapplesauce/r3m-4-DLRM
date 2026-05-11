@@ -186,15 +186,16 @@ pip("-e", ".[all]")
 pip("git+https://github.com/facebookresearch/sam2.git")
 
 # 3) Baselines. VC-1 is optional — baseline falls back to a timm ViT-L.
-pip("git+https://github.com/facebookresearch/r3m.git")
+# CRITICAL: install r3m with --no-deps. r3m's setup.py pins gym==0.21.0
+# which silently downgrades numpy to 1.x, breaking the h5py / mujoco /
+# scipy wheels Colab ships compiled against numpy 2.x. At runtime r3m
+# only needs torch + torchvision (already present), so --no-deps is safe.
+pip("--no-deps", "git+https://github.com/facebookresearch/r3m.git")
+# r3m's load_r3m calls into a couple of small utility packages that we
+# do need; install them by hand without letting them re-pull gym.
+pip("hydra-core", "omegaconf", "huggingface_hub", allow_fail=True)
 pip("git+https://github.com/facebookresearch/eai-vc.git#subdirectory=vc_models",
     allow_fail=True)
-
-# 4) Pin numpy back to 2.x. r3m pulls gym==0.21.0 which silently downgrades
-# numpy to 1.x, breaking h5py / mujoco / robosuite wheels that Colab ships
-# compiled against numpy 2.x. This force-reinstall fixes the ABI mismatch
-# *before* the smoke-test imports below run.
-pip("--force-reinstall", "--no-deps", "numpy>=2.0,<2.2")
 
 # 4) SAM 2 checkpoint.
 import os
