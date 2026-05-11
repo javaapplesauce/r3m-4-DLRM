@@ -11,3 +11,4 @@ build/
 /wandb/
 *.pt
 *.pth
+.claude/tdd-guard/

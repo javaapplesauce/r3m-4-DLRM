@@ -1,12 +1,25 @@
-"""Train a CAVR or baseline policy via behavioral cloning."""
+"""Train a CAVR or baseline policy via behavioral cloning.
+
+Two entry modes:
+
+  --run-id RUN_ID  → invokes the cavr.utils.runs.train_and_eval orchestrator
+                     (writes outputs/runs/<run_id>.json, prints
+                     "[done] <run_id> sr=... elapsed=..." that the Colab
+                     notebook parses). This is the path used by the sweep.
+
+  (default)        → classic in-place training, no JSON record. Kept for
+                     manual smoke tests and `python scripts/train.py
+                     --model cavr --env Lift --epochs 2` style debugging.
+"""
 import argparse
+import time
 import yaml
 import torch
 
 from cavr.models.pipeline import CAVR
 from cavr.models.baselines import R3MBaseline, VC1Baseline
 from cavr.data.dataset import DemoDataset
-from cavr.training.bc_trainer import BCTrainer
+from cavr.training.bc_trainer import BCTrainer, set_global_seed
 from cavr.envs.robosuite_envs import get_task_description
 
 
@@ -41,7 +54,37 @@ def main():
              "auto-detects masks.hdf5 alongside demos.hdf5. Ignored when "
              "--no-masking is set.",
     )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="If set, dispatch to cavr.utils.runs.train_and_eval which also "
+             "evaluates and writes a JSON record. Use this from automated "
+             "sweeps. Without it, this script just trains.",
+    )
+    parser.add_argument("--runs-dir", default="outputs/runs",
+                        help="Directory for per-run JSON records (with --run-id).")
+    parser.add_argument("--csv-path", default=None,
+                        help="Optional CSV to append a summary row to (with --run-id).")
+    parser.add_argument("--num-eval-episodes", type=int, default=None,
+                        help="Override evaluation.num_episodes.")
     args = parser.parse_args()
+
+    if args.run_id is not None:
+        from cavr.utils.runs import train_and_eval
+        train_and_eval(
+            args.model,
+            args.env or "Lift",
+            args.seed if args.seed is not None else 0,
+            runs_dir=args.runs_dir,
+            csv_path=args.csv_path,
+            config_path=args.config,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            eval_episodes=args.num_eval_episodes,
+            masking_override=False if args.no_masking else None,
+            variant=args.run_id,
+        )
+        return
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
@@ -56,13 +99,13 @@ def main():
         cfg["training"]["lr"] = args.lr
     if args.batch_size:
         cfg["training"]["batch_size"] = args.batch_size
-    if args.seed:
+    if args.seed is not None:
         cfg["training"]["seed"] = args.seed
     if args.no_masking:
         cfg["masking"]["enabled"] = False
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    torch.manual_seed(cfg["training"]["seed"])
+    set_global_seed(int(cfg["training"]["seed"]))
 
     model = MODEL_BUILDERS[args.model](cfg, device)
 
@@ -104,7 +147,11 @@ def main():
     frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
     print(f"Params: {trainable:,} trainable / {frozen:,} frozen\n")
 
-    trainer.train(dataset, task_description=task_desc)
+    t0 = time.time()
+    best_val = trainer.train(dataset, task_description=task_desc)
+    elapsed = time.time() - t0
+    run_id = f"{args.model}_{cfg['env']['name']}_seed{cfg['training']['seed']}"
+    print(f"[done] {run_id} sr=nan elapsed={elapsed:.0f}s best_val={best_val:.6f}")
 
 
 if __name__ == "__main__":

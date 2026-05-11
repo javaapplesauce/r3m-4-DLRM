@@ -1,9 +1,21 @@
 import os
+import random
 import sys
 import time
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
+
+
+def set_global_seed(seed: int) -> None:
+    """Seed python/numpy/torch RNGs so a single (model, task, seed) tuple is
+    reproducible across re-runs. Called from train.py and the orchestrator."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _freeze_encoder_bn(model):
@@ -36,6 +48,9 @@ class BCTrainer:
         )
         self.loss_fn = nn.MSELoss()
         self.logger = None
+        self.train_losses: list[float] = []
+        self.val_losses: list[tuple[int, float]] = []
+        self.train_seconds: float = 0.0
 
     def setup_wandb(self, project, run_name):
         try:
@@ -45,6 +60,11 @@ class BCTrainer:
             pass
 
     def train(self, dataset, task_description=None):
+        set_global_seed(int(self.cfg["seed"]))
+        self.train_losses = []
+        self.val_losses = []
+        t0 = time.time()
+
         val_size = max(1, int(0.1 * len(dataset)))
         train_size = len(dataset) - val_size
         train_set, val_set = random_split(
@@ -79,11 +99,13 @@ class BCTrainer:
 
         for epoch in range(self.cfg["num_epochs"]):
             train_loss = self._train_epoch(train_loader, task_description)
+            self.train_losses.append(float(train_loss))
 
             log = {"epoch": epoch, "train_loss": train_loss}
 
             if (epoch + 1) % self.cfg["eval_freq"] == 0 or epoch == 0:
                 val_loss = self._eval_epoch(val_loader, task_description)
+                self.val_losses.append((int(epoch), float(val_loss)))
                 log["val_loss"] = val_loss
 
                 if val_loss < best_val_loss:
@@ -105,6 +127,7 @@ class BCTrainer:
                 wandb.log(log)
 
         self._save_checkpoint(os.path.join(ckpt_dir, "final.pt"), epoch)
+        self.train_seconds = time.time() - t0
         return best_val_loss
 
     def _unpack(self, batch):
