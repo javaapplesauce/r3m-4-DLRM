@@ -190,6 +190,12 @@ pip("git+https://github.com/facebookresearch/r3m.git")
 pip("git+https://github.com/facebookresearch/eai-vc.git#subdirectory=vc_models",
     allow_fail=True)
 
+# 4) Pin numpy back to 2.x. r3m pulls gym==0.21.0 which silently downgrades
+# numpy to 1.x, breaking h5py / mujoco / robosuite wheels that Colab ships
+# compiled against numpy 2.x. This force-reinstall fixes the ABI mismatch
+# *before* the smoke-test imports below run.
+pip("--force-reinstall", "--no-deps", "numpy>=2.0,<2.2")
+
 # 4) SAM 2 checkpoint.
 import os
 os.makedirs("checkpoints", exist_ok=True)
