@@ -48,53 +48,48 @@ def _feature_grid(image_size, backbone):
     return fh, fw
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="cavr/configs/default.yaml")
-    parser.add_argument("--data-dir", default=None,
-                        help="Directory containing demos.hdf5. Defaults to cfg.data.save_dir.")
-    parser.add_argument("--env", default=None,
-                        help="Robosuite env name — controls the task description used "
-                             "for Grounding DINO. Defaults to cfg.env.name.")
-    parser.add_argument("--task-description", default=None,
-                        help="Override the text query. Takes precedence over --env.")
-    parser.add_argument("--output", default=None,
-                        help="Output mask HDF5 path. Defaults to <data-dir>/masks.hdf5.")
-    parser.add_argument("--batch-size", type=int, default=1,
-                        help="Images processed per ConceptMasker call. Currently "
-                             "the masker iterates per-image internally, so this "
-                             "mostly controls tqdm granularity.")
-    parser.add_argument("--force", action="store_true",
-                        help="Overwrite existing mask file instead of appending "
-                             "only missing demos.")
-    args = parser.parse_args()
+def precompute(
+    data_dir,
+    env_name=None,
+    task_description=None,
+    output=None,
+    force=False,
+    config_path="cavr/configs/default.yaml",
+):
+    """Compute and cache Grounding-DINO+SAM2 masks for every frame in
+    `<data_dir>/demos.hdf5`. Callable from notebooks (no subprocess).
 
-    with open(args.config) as f:
+    Args mirror the CLI flags. Returns the path to the written masks.hdf5.
+    """
+    with open(config_path) as f:
         cfg = yaml.safe_load(f)
 
-    data_dir = Path(args.data_dir or cfg["data"]["save_dir"])
+    data_dir = Path(data_dir)
     demo_path = data_dir / "demos.hdf5"
     if not demo_path.exists():
         raise FileNotFoundError(f"No demo file at {demo_path}")
 
-    env_name = args.env or cfg["env"]["name"]
-    task_desc = args.task_description or get_task_description(env_name)
+    env_name = env_name or cfg["env"]["name"]
+    task_desc = task_description or get_task_description(env_name)
     backbone = cfg["encoder"]["backbone"]
     image_size = cfg["env"]["camera_height"]
     fh, fw = _feature_grid(image_size, backbone)
 
-    out_path = Path(args.output) if args.output else data_dir / "masks.hdf5"
+    out_path = Path(output) if output else data_dir / "masks.hdf5"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     masker = ConceptMasker(threshold=cfg["masking"]["threshold"], device=str(device))
     masker._lazy_init(device=device)
     if masker._grounding_model is None or masker._sam_predictor is None:
+        gd_err = getattr(masker, "_gdino_err", "unknown")
+        sam_err = getattr(masker, "_sam_err", "unknown")
         raise RuntimeError(
-            "Grounding DINO or SAM2 not available. Install transformers and "
-            "sam2, and download sam2_hiera_large.pt, before precomputing masks. "
-            "(Without these, there's nothing to cache — the runtime falls back "
-            "to all-ones masks which you can emulate with --no-masking on train.)"
+            f"Grounding DINO or SAM2 not available.\n"
+            f"  Grounding DINO error: {gd_err}\n"
+            f"  SAM2 error:          {sam_err}\n"
+            f"Install transformers and sam2, and ensure "
+            f"sam2_hiera_large.pt exists in the cwd ({os.getcwd()})."
         )
 
     print(f"[precompute] demos       = {demo_path}")
@@ -105,7 +100,7 @@ def main():
     print(f"[precompute] image size  = {image_size}  → feature grid {fh}x{fw}")
     print(f"[precompute] device      = {device}")
 
-    mode = "w" if args.force or not out_path.exists() else "a"
+    mode = "w" if force or not out_path.exists() else "a"
     existing_keys = set()
     if mode == "a":
         with h5py.File(out_path, "r") as mf:
@@ -118,7 +113,7 @@ def main():
                 f"Existing {out_path} was built with task={prev_text!r}, "
                 f"grid={prev_fh}x{prev_fw} — incompatible with the current "
                 f"request (task={task_desc!r}, grid={fh}x{fw}). Re-run with "
-                f"--force to overwrite, or delete the file."
+                f"force=True to overwrite, or delete the file."
             )
 
     with h5py.File(demo_path, "r") as demo_f, h5py.File(out_path, mode) as mask_f:
@@ -136,7 +131,7 @@ def main():
         for key in demo_keys:
             if key in existing_keys:
                 continue
-            images = demo_f[key]["images"][:]  # (T, 3, H, W) uint8
+            images = demo_f[key]["images"][:]
             T = images.shape[0]
             out = np.zeros((T, fh, fw), dtype=np.uint8)
 
@@ -154,6 +149,31 @@ def main():
         pbar.close()
 
     print(f"[precompute] wrote {out_path}")
+    return str(out_path)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="cavr/configs/default.yaml")
+    parser.add_argument("--data-dir", default=None)
+    parser.add_argument("--env", default=None)
+    parser.add_argument("--task-description", default=None)
+    parser.add_argument("--output", default=None)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args()
+
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+    data_dir = args.data_dir or cfg["data"]["save_dir"]
+    precompute(
+        data_dir=data_dir,
+        env_name=args.env,
+        task_description=args.task_description,
+        output=args.output,
+        force=args.force,
+        config_path=args.config,
+    )
 
 
 if __name__ == "__main__":

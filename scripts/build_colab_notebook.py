@@ -261,19 +261,57 @@ env.close()
     cells.append(_md(
         "## Section B: Data preparation\n"
         "\n"
-        "Idempotent. Skips collection when a populated `demos.hdf5` is already\n"
-        "on Drive (≥30 demos) and skips mask precompute when `masks.hdf5` is\n"
-        "present. Both run sequentially per task (Lift, then PickPlace).\n"
+        "Idempotent. Skips collection when a populated `demos.hdf5` is on Drive\n"
+        "(≥30 demos), skips mask precompute when `masks.hdf5` is present.\n"
+        "\n"
+        "**Time-crunched?** Set `QUICK_MODE = True` in the next cell to limit\n"
+        "the sweep to Lift only (skips PickPlace data, halves the runtime budget)."
     , "section-data"))
 
     cells.append(_code(
-        """# Cell 9: collect scripted demos for each task.
-# Writes <task-dir>/demos.hdf5 via cavr/data/collector.py.
-import os, subprocess, h5py
+        """# Cell 8b: sweep configuration. Edit in one place; downstream cells read these.
+QUICK_MODE = False         # True → Lift only, fewer epochs / seeds / eval episodes.
 
-TASKS = ["Lift", "PickPlace"]
+if QUICK_MODE:
+    TASKS = ["Lift"]
+    SEEDS = [0, 1, 2]
+    EPOCHS = 40
+    EVAL_EPISODES = 20
+    BATCH_SIZE = 64
+    EVAL_FREQ = 5
+    RUN_ABLATION = True
+else:
+    TASKS = ["Lift", "PickPlace"]
+    SEEDS = [0, 1, 2]
+    EPOCHS = 60
+    EVAL_EPISODES = 25
+    BATCH_SIZE = 64
+    EVAL_FREQ = 5
+    RUN_ABLATION = True
+
+print(f"TASKS={TASKS}  SEEDS={SEEDS}  EPOCHS={EPOCHS}  "
+      f"EVAL_EPISODES={EVAL_EPISODES}  RUN_ABLATION={RUN_ABLATION}")
+"""
+    , "sweep-config"))
+
+    cells.append(_code(
+        """# Cell 9: collect scripted demos for each task.
+# In-process call so errors land in the cell instead of being swallowed by
+# a subprocess. Idempotent: skips tasks with ≥30 demos already cached.
+import copy
+import os
+import traceback
+
+import h5py
+import yaml
+
+from cavr.data.collector import collect_scripted_demos
+
 TARGET_DEMOS = 50
 MIN_DEMOS = 30
+
+with open("cavr/configs/default.yaml") as f:
+    BASE_CFG = yaml.safe_load(f)
 
 for task in TASKS:
     task_dir = f"data/demos_{task}"
@@ -286,44 +324,39 @@ for task in TASKS:
                 n = len(list(f.keys()))
         except Exception:
             n = 0
-
     if n >= MIN_DEMOS:
         print(f"[skip] {task}: {n} demos cached at {demo_file}")
         continue
 
     print(f"[collect] {task}: target {TARGET_DEMOS} demos (have {n}) → {task_dir}")
-    # -u (unbuffered) so tqdm progress streams to Colab in real time.
-    # Without it, output blocks in 4KB chunks and you see one line for 10+ min.
-    cmd = [
-        "python", "-u", "scripts/collect_demos.py",
-        "--env", task,
-        "--num-demos", str(TARGET_DEMOS),
-        "--save-dir", task_dir,
-    ]
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    res = subprocess.run(cmd, env=env)
-    if res.returncode != 0:
-        print(f"[FAIL] {task}: collector exit {res.returncode}")
+    cfg = copy.deepcopy(BASE_CFG)
+    cfg["env"]["name"] = task
+    cfg["data"]["num_demos"] = TARGET_DEMOS
+    cfg["data"]["save_dir"] = task_dir
+    try:
+        collect_scripted_demos(cfg)
+    except Exception as e:
+        print(f"[FAIL] {task}: {e}")
+        traceback.print_exc()
         continue
 
     with h5py.File(demo_file, "r") as f:
         actual = len(list(f.keys()))
     print(f"[collect] {task}: wrote {actual} demos to {demo_file}")
     if actual < MIN_DEMOS:
-        print(f"!!! {task} only produced {actual} (<{MIN_DEMOS}). Tune the "
-              f"scripted collector before proceeding.")
+        print(f"!!! {task} only produced {actual} (<{MIN_DEMOS}). Stop and ping "
+              f"Claude Code — the scripted collector heuristic is task-dependent.")
 """
     , "data-demos"))
 
     cells.append(_code(
         """# Cell 10: precompute Grounding-DINO + SAM2 masks per task.
-# Computed ONCE; training reads cached masks. Writes <task-dir>/masks.hdf5.
-import os, subprocess
+# In-process call — errors hit the cell directly.
+import os
+import traceback
 
+from scripts.precompute_masks import precompute
 from cavr.utils.reporting import mask_coverage_stats
-
-TASKS = ["Lift", "PickPlace"]
 
 for task in TASKS:
     task_dir = f"data/demos_{task}"
@@ -332,16 +365,15 @@ for task in TASKS:
     if os.path.exists(mask_file):
         print(f"[skip] {task}: masks cached at {mask_file}")
     else:
+        if not os.path.exists(f"{task_dir}/demos.hdf5"):
+            print(f"[skip] {task}: no demos at {task_dir}/demos.hdf5")
+            continue
         print(f"[masks] {task}: precomputing → {mask_file}")
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        res = subprocess.run([
-            "python", "-u", "scripts/precompute_masks.py",
-            "--data-dir", task_dir,
-            "--env", task,
-        ], env=env)
-        if res.returncode != 0:
-            print(f"[FAIL] {task}: precompute exit {res.returncode}")
+        try:
+            precompute(data_dir=task_dir, env_name=task)
+        except Exception as e:
+            print(f"[FAIL] {task}: {e}")
+            traceback.print_exc()
             continue
 
     if os.path.exists(mask_file):
@@ -355,15 +387,13 @@ for task in TASKS:
 
     cells.append(_code(
         """# Cell 11: spot-check that masks actually look right.
-# 8 random frames per task; cols = RGB, RGB+box, mask, overlay.
-# Saves PNGs to outputs/figures/ AND inlines them.
 import os
 os.makedirs("outputs/figures", exist_ok=True)
 
 import matplotlib.pyplot as plt
 from cavr.utils.reporting import render_spotcheck_panel
 
-for task in ("Lift", "PickPlace"):
+for task in TASKS:
     demos = f"data/demos_{task}/demos.hdf5"
     masks = f"data/demos_{task}/masks.hdf5"
     if not os.path.exists(demos):
@@ -377,11 +407,8 @@ for task in ("Lift", "PickPlace"):
     print(f"saved {out_png}")
 
 print("\\n" + "=" * 60)
-print("REVIEW THE MASKS ABOVE.")
-print("If masks look wrong (empty, on the wrong object, or covering")
-print("everything), STOP HERE. Open an issue with Claude Code before")
-print("training. Do NOT continue with bad masks — the entire paper")
-print("depends on these being correct.")
+print("REVIEW THE MASKS ABOVE. If they look wrong (empty, on the wrong")
+print("object, or covering everything), STOP HERE before training.")
 print("=" * 60)
 """
     , "data-spotcheck"))
@@ -395,27 +422,25 @@ print("=" * 60)
     , "section-resume"))
 
     cells.append(_code(
-        """# Cell 13: print remaining runs.
+        """# Cell 13: print remaining runs. Uses TASKS/SEEDS from the sweep-config cell.
 from itertools import product
 from cavr.utils.reporting import print_resume_status
 
 BASELINE_MODELS = ["cavr", "r3m", "vc1"]
-BASELINE_TASKS = ["Lift", "PickPlace"]
-SEEDS = [0, 1, 2]
 
-baseline_expected = list(product(BASELINE_MODELS, BASELINE_TASKS, SEEDS))
-print("BASELINES (18 runs)")
+baseline_expected = list(product(BASELINE_MODELS, TASKS, SEEDS))
+print(f"BASELINES ({len(baseline_expected)} runs)")
 print_resume_status("outputs/runs", baseline_expected)
 
 ABLATION_VARIANTS = [
     "cavr_vitl_masked",
     "cavr_vitl_no_mask",
-    # ViT-B variants run only if time remains; they're tracked but may be MISSING.
+    # ViT-B variants are only run if there's wallclock left.
     "cavr_vitb_masked",
     "cavr_vitb_no_mask",
 ]
-ablation_expected = [(variant, seed) for variant in ABLATION_VARIANTS for seed in SEEDS]
-print("\\nABLATIONS (12 runs scheduled; ViT-B optional)")
+ablation_expected = [(v, s) for v in ABLATION_VARIANTS for s in SEEDS]
+print(f"\\nABLATIONS ({len(ablation_expected)} runs scheduled; ViT-B optional)")
 print_resume_status("outputs/runs", ablation_expected)
 """
     , "resume-status"))
@@ -434,25 +459,19 @@ print_resume_status("outputs/runs", ablation_expected)
     , "section-training"))
 
     cells.append(_code(
-        """# Cell 15: baseline sweep. cavr × {Lift, PickPlace} × {0, 1, 2}, same for r3m / vc1.
+        """# Cell 15: baseline sweep. {cavr, r3m, vc1} × TASKS × SEEDS.
+# Uses TASKS / SEEDS / EPOCHS / EVAL_EPISODES from the sweep-config cell.
+# train_and_eval is skip-if-cached at (model, task, seed) granularity, so
+# re-running this cell after a disconnect picks up where it stopped.
 import time
 from itertools import product
 
 from cavr.utils.runs import train_and_eval
 
 NOTEBOOK_START_TIME = time.time()
-
 BASELINE_MODELS = ["cavr", "r3m", "vc1"]
-BASELINE_TASKS = ["Lift", "PickPlace"]
-SEEDS = [0, 1, 2]
 
-# Sized for ~10-15 min per run on A100. Tweak if your runs are over budget.
-EPOCHS = 60
-EVAL_EPISODES = 25
-BATCH_SIZE = 64
-EVAL_FREQ = 5
-
-for model, task, seed in product(BASELINE_MODELS, BASELINE_TASKS, SEEDS):
+for model, task, seed in product(BASELINE_MODELS, TASKS, SEEDS):
     train_and_eval(
         model, task, seed,
         runs_dir="outputs/runs",
@@ -463,69 +482,63 @@ for model, task, seed in product(BASELINE_MODELS, BASELINE_TASKS, SEEDS):
         batch_size=BATCH_SIZE,
     )
 
-print(f"\\nBaseline sweep elapsed: {(time.time() - NOTEBOOK_START_TIME)/3600:.2f} h")
+print(f"\\nBaseline sweep elapsed: {(time.time() - NOTEBOOK_START_TIME)/60:.1f} min")
 """
     , "training-baselines"))
 
     cells.append(_code(
-        """# Cell 16: ablation sweep on Lift.
+        """# Cell 16: ablation sweep on Lift (always Lift, regardless of QUICK_MODE).
 # Required: cavr_vitl_{masked, no_mask}. Optional: cavr_vitb_{masked, no_mask}.
 import time
 from itertools import product
 
 from cavr.utils.runs import train_and_eval
 
-# Budget guard: if we're more than 9h in, skip the optional ViT-B variants.
-# Resilient to cell 15 not having run this session (post-disconnect path).
-WALLCLOCK_CAP_HOURS = 9.0
-try:
-    NOTEBOOK_START_TIME
-except NameError:
-    NOTEBOOK_START_TIME = time.time()
-
-VITL_VARIANTS = [
-    ("cavr_vitl_masked",  "dinov2_vitl14", True),
-    ("cavr_vitl_no_mask", "dinov2_vitl14", False),
-]
-VITB_VARIANTS = [
-    ("cavr_vitb_masked",  "dinov2_vitb14", True),
-    ("cavr_vitb_no_mask", "dinov2_vitb14", False),
-]
-TASK = "Lift"
-SEEDS = [0, 1, 2]
-
-EPOCHS = 60
-EVAL_EPISODES = 25
-BATCH_SIZE = 64
-EVAL_FREQ = 5
-
-def run_variant(variant, backbone, masked, seed):
-    run_id = f"{variant}_seed{seed}"
-    train_and_eval(
-        "cavr", TASK, seed,
-        runs_dir="outputs/runs",
-        csv_path="outputs/ablation_results.csv",
-        epochs=EPOCHS,
-        eval_freq=EVAL_FREQ,
-        eval_episodes=EVAL_EPISODES,
-        batch_size=BATCH_SIZE,
-        masking_override=masked,
-        backbone_override=backbone,
-        variant=run_id,
-    )
-
-for (name, backbone, masked), seed in product(VITL_VARIANTS, SEEDS):
-    run_variant(name, backbone, masked, seed)
-
-elapsed_h = (time.time() - NOTEBOOK_START_TIME) / 3600
-if elapsed_h > WALLCLOCK_CAP_HOURS:
-    print(f"\\n[budget] elapsed={elapsed_h:.2f}h > {WALLCLOCK_CAP_HOURS}h — "
-          f"skipping ViT-B variants.")
+if not RUN_ABLATION:
+    print("[skip] RUN_ABLATION=False (set in the sweep-config cell)")
 else:
-    for (name, backbone, masked), seed in product(VITB_VARIANTS, SEEDS):
+    # Resilient to cell 15 not having run this session (post-disconnect path).
+    try:
+        NOTEBOOK_START_TIME
+    except NameError:
+        NOTEBOOK_START_TIME = time.time()
+    WALLCLOCK_CAP_HOURS = 9.0
+
+    VITL_VARIANTS = [
+        ("cavr_vitl_masked",  "dinov2_vitl14", True),
+        ("cavr_vitl_no_mask", "dinov2_vitl14", False),
+    ]
+    VITB_VARIANTS = [
+        ("cavr_vitb_masked",  "dinov2_vitb14", True),
+        ("cavr_vitb_no_mask", "dinov2_vitb14", False),
+    ]
+
+    def run_variant(variant, backbone, masked, seed):
+        train_and_eval(
+            "cavr", "Lift", seed,
+            runs_dir="outputs/runs",
+            csv_path="outputs/ablation_results.csv",
+            epochs=EPOCHS,
+            eval_freq=EVAL_FREQ,
+            eval_episodes=EVAL_EPISODES,
+            batch_size=BATCH_SIZE,
+            masking_override=masked,
+            backbone_override=backbone,
+            variant=f"{variant}_seed{seed}",
+        )
+
+    for (name, backbone, masked), seed in product(VITL_VARIANTS, SEEDS):
         run_variant(name, backbone, masked, seed)
 
-print(f"\\nFull sweep elapsed: {(time.time() - NOTEBOOK_START_TIME)/3600:.2f} h")
+    elapsed_h = (time.time() - NOTEBOOK_START_TIME) / 3600
+    if elapsed_h > WALLCLOCK_CAP_HOURS:
+        print(f"\\n[budget] elapsed={elapsed_h:.2f}h > {WALLCLOCK_CAP_HOURS}h — "
+              f"skipping ViT-B variants.")
+    else:
+        for (name, backbone, masked), seed in product(VITB_VARIANTS, SEEDS):
+            run_variant(name, backbone, masked, seed)
+
+    print(f"\\nAblation sweep elapsed: {(time.time() - NOTEBOOK_START_TIME)/60:.1f} min")
 """
     , "training-ablation"))
 
@@ -538,6 +551,8 @@ print(f"\\nFull sweep elapsed: {(time.time() - NOTEBOOK_START_TIME)/3600:.2f} h"
 
     cells.append(_code(
         """# Cell 18: Fig 1 — headline bar chart (CAVR vs R3M vs VC-1, per task).
+# Tolerates partial data: missing (model, task) cells render as zero-height
+# bars with no error, and tasks with no rows are dropped entirely.
 import os
 import numpy as np
 import pandas as pd
@@ -546,21 +561,30 @@ import matplotlib.pyplot as plt
 os.makedirs("outputs/figures", exist_ok=True)
 plt.rcParams.update({"font.family": "serif"})
 
-df = pd.read_csv("outputs/baseline_results.csv")
+CSV_PATH = "outputs/baseline_results.csv"
+if not os.path.exists(CSV_PATH):
+    print(f"[skip] {CSV_PATH} doesn't exist yet — no figure to build.")
+    raise SystemExit
+df = pd.read_csv(CSV_PATH)
 df = df[df["status"] == "DONE"].copy()
-df["success_rate"] = df["success_rate"].astype(float)
+df["success_rate"] = pd.to_numeric(df["success_rate"], errors="coerce")
+df = df.dropna(subset=["success_rate"])
+if df.empty:
+    print("[skip] no completed baseline runs in the CSV yet.")
+    raise SystemExit
 
 MODELS = ["cavr", "r3m", "vc1"]
-TASKS = ["Lift", "PickPlace"]
+# Only plot tasks we actually have data for.
+TASKS_HERE = [t for t in ["Lift", "PickPlace"] if (df["task"] == t).any()]
 COLORS = {"cavr": "#1f77b4", "r3m": "#ff7f0e", "vc1": "#2ca02c"}
 
 fig, ax = plt.subplots(figsize=(8, 4.5))
-x = np.arange(len(TASKS))
+x = np.arange(len(TASKS_HERE))
 width = 0.25
 
 for i, model in enumerate(MODELS):
     means, stds = [], []
-    for task in TASKS:
+    for task in TASKS_HERE:
         sub = df[(df["model"] == model) & (df["task"] == task)]
         if len(sub) == 0:
             means.append(0.0); stds.append(0.0)
@@ -573,7 +597,7 @@ for i, model in enumerate(MODELS):
         ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 0.02,
                 f"{means[j]:.2f}", ha="center", va="bottom", fontsize=9)
 
-ax.set_xticks(x); ax.set_xticklabels(TASKS)
+ax.set_xticks(x); ax.set_xticklabels(TASKS_HERE)
 ax.set_ylabel("Success rate"); ax.set_ylim(0, 1.0)
 ax.set_title("CAVR vs visual-representation baselines (3 seeds)")
 ax.legend(loc="upper right")
@@ -593,9 +617,17 @@ import matplotlib.pyplot as plt
 
 plt.rcParams.update({"font.family": "serif"})
 
-df = pd.read_csv("outputs/ablation_results.csv")
+CSV_PATH = "outputs/ablation_results.csv"
+if not os.path.exists(CSV_PATH):
+    print(f"[skip] {CSV_PATH} doesn't exist — ablation cell never ran.")
+    raise SystemExit
+df = pd.read_csv(CSV_PATH)
 df = df[df["status"] == "DONE"].copy()
-df["success_rate"] = df["success_rate"].astype(float)
+df["success_rate"] = pd.to_numeric(df["success_rate"], errors="coerce")
+df = df.dropna(subset=["success_rate"])
+if df.empty:
+    print("[skip] no completed ablation runs yet.")
+    raise SystemExit
 
 variants = df["variant"].dropna().unique().tolist() if "variant" in df.columns else []
 
