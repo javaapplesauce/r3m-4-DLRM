@@ -87,6 +87,11 @@ def print_resume_status(
         print(f"{run_id:<40} {status:<8} {sr_str:>12}")
         if status == "DONE":
             done += 1
+        else:
+            # RUNNING / CRASHED records will be re-attempted by train_and_eval
+            # (skip-if-cached only fires on a populated success_rate), so they
+            # count toward "remaining" from the user's perspective.
+            missing.append(f"{run_id}({status})")
 
     print("-" * 64)
     print(f"Completed {done}/{len(expected_list)}.")
