@@ -197,6 +197,15 @@ pip("hydra-core", "omegaconf", "huggingface_hub", allow_fail=True)
 pip("git+https://github.com/facebookresearch/eai-vc.git#subdirectory=vc_models",
     allow_fail=True)
 
+# Defensive numpy pin: Colab ships scipy/h5py/mujoco/robosuite wheels built
+# against numpy 2.0.x. If anything earlier in the install chain bumped numpy
+# even one minor version, scipy import dies with "cannot import _center from
+# numpy._core.umath". Force numpy back to Colab's default. (Requires a kernel
+# restart on first install to take effect — Colab does that implicitly when
+# numpy is reinstalled, but if you see ImportErrors after this cell, manually
+# Runtime → Restart session and re-run from Cell 1.)
+pip("--force-reinstall", "--no-deps", "numpy==2.0.2")
+
 # 4) SAM 2 checkpoint.
 import os
 os.makedirs("checkpoints", exist_ok=True)
