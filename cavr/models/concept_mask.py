@@ -60,17 +60,37 @@ class ConceptMasker(nn.Module):
             self._grounding_model = None
             self._gdino_err = repr(e)
 
+        # sam2 has gone through naming churn — try multiple (config, ckpt) pairs
+        # and keep the first one whose checkpoint is on disk AND loads cleanly.
+        # Order: legacy sam2 (what we wget), then sam2.1.
+        sam_attempts = [
+            ("sam2_hiera_l.yaml", "sam2_hiera_large.pt"),
+            ("configs/sam2/sam2_hiera_l.yaml", "sam2_hiera_large.pt"),
+            ("configs/sam2.1/sam2.1_hiera_l.yaml", "sam2.1_hiera_large.pt"),
+            ("sam2.1_hiera_l.yaml", "sam2.1_hiera_large.pt"),
+        ]
+        self._sam_predictor = None
+        sam_errors = []
         try:
             from sam2.build_sam import build_sam2
             from sam2.sam2_image_predictor import SAM2ImagePredictor
-
-            sam = build_sam2(
-                "sam2_hiera_l.yaml", "sam2_hiera_large.pt", device=str(self._device)
-            )
-            self._sam_predictor = SAM2ImagePredictor(sam)
         except Exception as e:
-            self._sam_predictor = None
-            self._sam_err = repr(e)
+            self._sam_err = f"sam2 import failed: {e!r}"
+        else:
+            import os as _os
+            for cfg_name, ckpt_name in sam_attempts:
+                if not _os.path.exists(ckpt_name):
+                    sam_errors.append(f"{cfg_name} / {ckpt_name}: checkpoint missing")
+                    continue
+                try:
+                    sam = build_sam2(cfg_name, ckpt_name, device=str(self._device))
+                    self._sam_predictor = SAM2ImagePredictor(sam)
+                    self._sam_err = None
+                    break
+                except Exception as e:
+                    sam_errors.append(f"{cfg_name} / {ckpt_name}: {e!r}")
+            if self._sam_predictor is None:
+                self._sam_err = "; ".join(sam_errors) or "no sam2 attempts succeeded"
 
     @torch.no_grad()
     def _get_bounding_box(self, image_pil, text):

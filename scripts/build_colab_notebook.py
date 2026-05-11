@@ -206,12 +206,24 @@ pip("git+https://github.com/facebookresearch/eai-vc.git#subdirectory=vc_models",
 # Runtime → Restart session and re-run from Cell 1.)
 pip("--force-reinstall", "--no-deps", "numpy==2.0.2")
 
-# 4) SAM 2 checkpoint.
+# 4) SAM 2 checkpoint. -nc skipped if file already exists; otherwise wget
+# without -q so a failed download is visible. Verify size > 100 MB.
 import os
 os.makedirs("checkpoints", exist_ok=True)
-if not os.path.exists("sam2_hiera_large.pt"):
-    !wget -nc -q --show-progress -O sam2_hiera_large.pt \\
+need_download = True
+if os.path.exists("sam2_hiera_large.pt"):
+    sz = os.path.getsize("sam2_hiera_large.pt")
+    if sz > 100_000_000:
+        print(f"  sam2 ckpt OK ({sz/1e6:.0f} MB)")
+        need_download = False
+    else:
+        print(f"  sam2 ckpt too small ({sz} bytes); re-downloading.")
+        os.remove("sam2_hiera_large.pt")
+if need_download:
+    !wget --show-progress -O sam2_hiera_large.pt \\
         https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt
+    sz = os.path.getsize("sam2_hiera_large.pt")
+    assert sz > 100_000_000, f"sam2 ckpt download failed; only got {sz} bytes."
 
 # 5) Import smoke test. Each line is one import; failures stay visible.
 import importlib, traceback
