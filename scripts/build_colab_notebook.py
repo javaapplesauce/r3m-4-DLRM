@@ -206,6 +206,13 @@ pip("git+https://github.com/facebookresearch/eai-vc.git#subdirectory=vc_models",
 # Runtime → Restart session and re-run from Cell 1.)
 pip("--force-reinstall", "--no-deps", "numpy==2.0.2")
 
+# 3b) Upgrade timm. Grounding DINO transitively imports timm, and
+# Colab's stock timm has a dataclass mutable-default bug
+# (timm.models.maxxvit.MaxxVitConvCfg) that Python 3.11+ rejects at
+# import time. Without the upgrade, the mask precompute silently falls
+# back to all-ones masks and CAVR collapses to a no-mask baseline.
+pip("--upgrade", "timm>=1.0.7")
+
 # 4) SAM 2 checkpoint. -nc skipped if file already exists; otherwise wget
 # without -q so a failed download is visible. Verify size > 100 MB.
 import os
