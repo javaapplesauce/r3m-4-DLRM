@@ -162,25 +162,33 @@ for name in ("data", "outputs", "checkpoints"):
 
     cells.append(_code(
         """# Cell 6: Python deps. Split into chunks so a single failure is easy to spot.
+# We deliberately do NOT use -q here: sam2 and r3m build CUDA/native bits and
+# their actual error messages are the only useful debug signal when they fail.
 import subprocess, sys
 
-def pip(*args):
-    cmd = [sys.executable, "-m", "pip", "install", "-q"] + list(args)
+def pip(*args, allow_fail=False):
+    cmd = [sys.executable, "-m", "pip", "install"] + list(args)
     print("$", " ".join(cmd[3:]))
-    subprocess.check_call(cmd)
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as e:
+        if allow_fail:
+            print(f"  [warn] {' '.join(args)} failed (rc={e.returncode}); continuing.")
+        else:
+            raise
 
 # 1) The package itself (CAVR), with the [all] extra. Torch stays as Colab ships it.
 pip("-e", ".[all]")
 
 # 2) Concept masking stack. transformers is in [all]; sam2 is intentionally not.
-pip("sam-2 @ git+https://github.com/facebookresearch/sam2.git")
+# Use the plain git URL (not "name @ url") — the PEP 508 name-prefix form can
+# trip on package-name-vs-distribution-name mismatches in some pip versions.
+pip("git+https://github.com/facebookresearch/sam2.git")
 
-# 3) Baselines.
-pip("r3m @ git+https://github.com/facebookresearch/r3m.git")
-try:
-    pip("vc_models @ git+https://github.com/facebookresearch/eai-vc.git#subdirectory=vc_models")
-except Exception:
-    print("VC-1 wheel install failed; baseline falls back to timm vit_large.")
+# 3) Baselines. VC-1 is optional — baseline falls back to a timm ViT-L.
+pip("git+https://github.com/facebookresearch/r3m.git")
+pip("git+https://github.com/facebookresearch/eai-vc.git#subdirectory=vc_models",
+    allow_fail=True)
 
 # 4) SAM 2 checkpoint.
 import os
