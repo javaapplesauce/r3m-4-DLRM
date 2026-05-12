@@ -12,3 +12,5 @@ build/
 *.pt
 *.pth
 .claude/tdd-guard/
+.DS_Store
+.ipynb_checkpoints/

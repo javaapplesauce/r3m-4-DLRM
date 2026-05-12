@@ -363,8 +363,8 @@ for task in TASKS:
         actual = len(list(f.keys()))
     print(f"[collect] {task}: wrote {actual} demos to {demo_file}")
     if actual < MIN_DEMOS:
-        print(f"!!! {task} only produced {actual} (<{MIN_DEMOS}). Stop and ping "
-              f"Claude Code — the scripted collector heuristic is task-dependent.")
+        print(f"!!! {task} only produced {actual} (<{MIN_DEMOS}). Stop and "
+              f"tune the scripted collector heuristic — it's task-dependent.")
 """
     , "data-demos"))
 

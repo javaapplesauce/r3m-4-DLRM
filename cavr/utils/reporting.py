@@ -6,27 +6,7 @@ import math
 import os
 from glob import glob
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
-
-
-def _parse_run_id(run_id: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
-    """Best-effort split of '<model>_<task>_seed<N>' into (model, task, seed).
-
-    Returns (None, None, None) for run ids that don't match (e.g. ablation
-    variant names like 'cavr_vitl_masked_Lift_seed0').
-    """
-    if "_seed" not in run_id:
-        return None, None, None
-    base, _, seed_str = run_id.rpartition("_seed")
-    try:
-        seed = int(seed_str)
-    except ValueError:
-        return None, None, None
-    # base is "<model>_<task>" — task is the last segment.
-    if "_" not in base:
-        return base, None, seed
-    model, _, task = base.rpartition("_")
-    return model, task, seed
+from typing import Iterable, List, Optional
 
 
 def print_resume_status(
